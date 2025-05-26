@@ -1,74 +1,74 @@
 import streamlit as st
 import PyPDF2
 import io
-import language_tool_python
+import requests
+from dotenv import load_dotenv
+import os
 
-# Predefined job role requirements (expand this list)
-JOB_REQUIREMENTS = {
-    "data scientist": ["Python", "SQL", "Machine Learning", "Pandas", "Statistics"],
-    "web developer": ["HTML", "CSS", "JavaScript", "React", "Node.js"],
-    "cloud engineer": ["AWS", "Docker", "Terraform", "Linux", "Networking"]
-}
+load_dotenv()
 
-# Free learning resources (no API needed)
-RESOURCE_LINKS = {
-    "Python": "https://www.learnpython.org",
-    "SQL": "https://www.w3schools.com/sql",
-    "Machine Learning": "https://www.coursera.org/learn/machine-learning",
-    # Add more resources as needed
-}
+st.set_page_config(page_title="AI Resume Critiquer", page_icon="📃", layout="centered")
 
-def extract_text(file):
-    """Extract text from PDF or TXT files"""
-    if file.type == "application/pdf":
-        pdf = PyPDF2.PdfReader(io.BytesIO(file.read()))
-        return " ".join([page.extract_text() for page in pdf.pages])
-    return file.read().decode("utf-8")
+st.title("AI Resume Critiquer")
+st.markdown("Upload your resume and get AI-powered feedback!")
 
-def check_grammar(text):
-    """Check grammar using LanguageTool"""
-    tool = language_tool_python.LanguageTool('en-US')
-    matches = tool.check(text)
-    return [f"{m.ruleId}: {m.message}" for m in matches[:5]]  # Return top 5 errors
+# Hugging Face Settings
+HF_API_KEY = os.getenv("HF_API_KEY")
+API_URL = "https://api-inference.huggingface.co/models/mistralai/Mixtral-8x7B-Instruct-v0.1"
+HEADERS = {"Authorization": f"Bearer {HF_API_KEY}"}
 
-def get_missing_skills(resume_text, job_role):
-    """Compare resume with job requirements"""
-    job_skills = JOB_REQUIREMENTS.get(job_role.lower(), [])
-    resume_skills = [skill for skill in job_skills if skill.lower() in resume_text.lower()]
-    return list(set(job_skills) - set(resume_skills))
+uploaded_file = st.file_uploader("Upload your resume (PDF or TXT)", type=["pdf", "txt"])
+job_role = st.text_input("Enter the job role you're targeting (optional)")
 
-# Streamlit UI
-st.title("Simple Resume Checker")
-st.write("Upload your resume for basic analysis")
+def extract_text_from_pdf(pdf_file):
+    pdf_reader = PyPDF2.PdfReader(pdf_file)
+    return "\n".join([page.extract_text() for page in pdf_reader.pages])
 
-uploaded_file = st.file_uploader("Choose a file", type=["pdf", "txt"])
-job_role = st.text_input("Job Role (optional)")
+def extract_text_from_file(uploaded_file):
+    if uploaded_file.type == "application/pdf":
+        return extract_text_from_pdf(io.BytesIO(uploaded_file.read()))
+    return uploaded_file.read().decode("utf-8")
 
-if uploaded_file and st.button("Analyze"):
-    text = extract_text(uploaded_file)
-    
-    if not text.strip():
-        st.error("Empty file content")
-        st.stop()
+if st.button("Analyze Resume") and uploaded_file:
+    try:
+        with st.spinner("Analyzing resume..."):
+            file_content = extract_text_from_file(uploaded_file)
+            
+            if not file_content.strip():
+                st.error("File content is empty")
+                st.stop()
 
-    # Grammar check
-    st.subheader("Grammar Suggestions")
-    grammar_errors = check_grammar(text)
-    if grammar_errors:
-        for error in grammar_errors:
-            st.error(error)
-    else:
-        st.success("No major grammar issues found")
+            prompt = f"""Analyze this resume and provide structured feedback:
+            1. Content clarity and impact
+            2. Skills presentation
+            3. Experience descriptions
+            4. {"Improvements for " + job_role if job_role else "General improvements"}
+            
+            Resume content:
+            {file_content[:3000]}  # Limit input length
+            
+            Provide concise recommendations in bullet points."""
 
-    # Job-specific analysis
-    if job_role:
-        st.subheader(f"Job Requirements Check ({job_role})")
-        missing_skills = get_missing_skills(text, job_role)
-        
-        if missing_skills:
-            st.write("Missing skills/tools:")
-            for skill in missing_skills:
-                resource = RESOURCE_LINKS.get(skill, f"https://www.google.com/search?q=learn+{skill}")
-                st.markdown(f"- [{skill}]({resource})")
-        else:
-            st.success("All recommended skills present!")
+            payload = {
+                "inputs": prompt,
+                "parameters": {
+                    "max_new_tokens": 1000,
+                    "temperature": 0.7
+                }
+            }
+            
+            response = requests.post(API_URL, headers=HEADERS, json=payload)
+            
+            if response.status_code == 200:
+                result = response.json()
+                if isinstance(result, list) and len(result) > 0:
+                    analysis = result[0].get('generated_text', 'No analysis generated')
+                    st.markdown("### Analysis Results")
+                    st.markdown(analysis)
+                else:
+                    st.error("Unexpected response format from API")
+            else:
+                st.error(f"API Error: {response.status_code} - {response.text}")
+
+    except Exception as e:
+        st.error(f"An error occurred: {str(e)}")
